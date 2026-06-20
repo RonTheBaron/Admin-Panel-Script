@@ -15,21 +15,22 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/RonTheBaron/Admin-Pan
 
 ## Features
 **Movement**
--Fly (with speed slider)
+
+- Fly (with speed slider)
 
 - Noclip (while flying)
-- 
+  
 - Infinite jump
-- 
--WalkSpeed slider
+  
+- WalkSpeed slider
 
--JumpPower slider (does not work yet)
+- JumpPower slider (does not work yet)
 
--Gravity slider
+- Gravity slider
 
--Sprinting (always on)
+- Sprinting (always on)
 
--Dash
+- Dash
 
 -Double jump (does not work yet)
 
