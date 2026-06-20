@@ -32,167 +32,179 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/RonTheBaron/Admin-Pan
 
 - Dash
 
--Double jump (does not work yet)
+- Double jump (does not work yet)
 
--Wall climb
+- Wall climb
 
--Swim in air (buggy)
+- Swim in air (buggy)
 
-Freeze & Unfreeze character
+- Freeze & Unfreeze character
 
-Respawn button (does not work yet)
+- Respawn button (does not work yet)
 
-Invisible character (client side only)
+- Invisible character (client side only)
 
 **Camera**
--Free Cam
 
--Cinematic Camera (does not work yet)
+- Free Cam
 
--Orbit camera
+- Cinematic Camera (does not work yet)
 
--First person lock
+- Orbit camera
+
+- First person lock
 
 -Screenshot mode (hides ui)
 
--FOV slider
+- FOV slider
 
--Third person camera distance slider
+- Third person camera distance slider
 
--Camera Shake
+- Camera Shake
 
--Depth of field
+- Depth of field
 
--Slow motion (does not work yet)
+- Slow motion (does not work yet)
 
 **ESP**
--Players
 
--NPCS
+- Players
 
--Items
+- NPCS
 
--Objectives
+- Items
 
--Vehicles
+- Objectives
 
--Box Highlights
+- Vehicles
 
--Tracers
+- Box Highlights
 
--Name labels
+- Tracers
 
--Distance labels
+- Name labels
 
--Health display
+- Distance labels
 
--Skeleton mode
+- Health display
 
--Team colors
+- Skeleton mode
+
+- Team colors
 
 **Character Visuals**
--God mode (client side only)
 
--Invisible Character (client side only)
+- God mode (client side only)
 
--Rainbow character (client side only)
+- Invisible Character (client side only)
 
--Trail (client side only)
+- Rainbow character (client side only)
 
--Aura particles (client side only)
+- Trail (client side only)
 
--Text popup (client side only)
+- Aura particles (client side only)
+
+- Text popup (client side only)
 
 **World Visuals**
--Fullbright
 
--Xray
+- Fullbright
 
--Higlight interactables
+- Xray
 
--Remove visual clatter (for better performence)
+- Higlight interactables
 
--Hud overlay (displays stats such as fps, ping, pos and more)
+- Remove visual clatter (for better performence)
+
+- Hud overlay (displays stats such as fps, ping, pos and more)
 
 **Weather**
--Time of day slider
 
--Brightness slider
+- Time Of Day slider
 
--Sun rays effect (does not work yet)
+- Brightness slider
 
--weather controller (clear, raining and more)
+- Sun Rays Effect (does not work yet)
 
--Fog controller
+- Weather Controller (clear, raining and more)
+
+- Fog Controller
 
 
 **Color Correction**
--Brightness
 
--Contrast
+- Brightness
 
--Saturation
+- Contrast
 
--Tints (Red, Green and Blue)
+- Saturation
+
+- Tints (Red, Green and Blue)
 
 **Effects**
--Lightning
 
--Meteor
+- Lightning
 
--Earthquake
+- Meteor
 
--Explosion
+- Earthquake
+
+- Explosion
 
 -Rainbow particles
 
 **Players**
--Player search bar
 
--Player in server list
+- Player Search Bar
 
--NPC tracker
+- Player List
+
+- NPC Tracker
 
 **Developer Tools**
--Remote Logger
 
--Runtime Stats
+- Remote Logger
 
--Instance Explorer
+- Runtime Stats
 
--Object Inspector
+- Instance Explorer
 
--Error Log
+- Object Inspector
 
--Lag Stimulator
+- Error Log
 
--Collision Visualizor
+- Lag Stimulator
 
--Hitbox Visualizor
+- Collision Visualizor
 
--Pathfinding Visualizor
+- Hitbox Visualizor
+
+- Pathfinding Visualizor
 
 **Quality Of Life**
--Favorites (You can equip favorites by pressing the star next to each command)
 
--Recent Pages
+- Favorites (You can equip favorites by pressing the star next to each command)
 
--Notifications History
+- Recent Pages
 
--Profiles (Does not save through different sessions)
+- Notifications History
 
--Quick Commands (such as reset gravity, reset FOV and more)
+- Profiles (Does not save through different sessions)
+
+- Quick Commands (such as reset gravity, reset FOV and more)
 
 **Keybinds**
--Keybinds for sprinting, dashing and more
 
--Ui hider keybind
+- Keybinds for sprinting, dashing and more
+
+- UI Hider Keybind
 
 **Settings**
--Themes
 
--Enable Notifications
+- Themes
 
--Blur Game Background
+- Enable Notifications
 
--Reset all settings`
+- Blur Game Background
+
+- Reset all settings`
