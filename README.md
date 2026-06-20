@@ -55,7 +55,7 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/RonTheBaron/Admin-Pan
 
 - First person lock
 
--Screenshot mode (hides ui)
+- Screenshot mode (hides ui)
 
 - FOV slider
 
