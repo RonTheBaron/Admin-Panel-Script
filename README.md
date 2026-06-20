@@ -28,7 +28,7 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/RonTheBaron/Admin-Pan
 -Swim in air (buggy)
 Freeze & Unfreeze character
 Respawn button (does not work yet)
-Invisible character (client side only)
+Invisible character (client side only)`
 
 **Camera**
 -Free Cam
