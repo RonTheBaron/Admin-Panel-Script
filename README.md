@@ -152,7 +152,7 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/RonTheBaron/Admin-Pan
 
 - Explosion
 
--Rainbow particles
+- Rainbow particles
 
 **Players**
 
