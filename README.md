@@ -1,5 +1,6 @@
 # Admin-Panel-Script
-A junky admin panel 
+A junky admin panel for Roblox
+
 MADE BY RONTHEBARON
 
 ## Warning!
