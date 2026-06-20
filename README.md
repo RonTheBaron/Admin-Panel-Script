@@ -15,10 +15,10 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/RonTheBaron/Admin-Pan
 
 ## Features
 **Movement**
--[x] Fly (with speed slider)
--[x] Noclip (while flying)
--[] Infinite jump
--[] WalkSpeed slider
+- [x] Fly (with speed slider)
+- [x] Noclip (while flying)
+- [] Infinite jump
+- [] WalkSpeed slider
 -JumpPower slider (does not work yet)
 -Gravity slider
 -Sprinting (always on)
