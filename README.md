@@ -7,7 +7,7 @@ MADE BY RONTHEBARON
 A lot of the features are very buggy and don't work as intended, so please be careful with the usage of the script as it might get you **banned**.
 
 ## Script version
-`Version 1.42`
+`Version 1.0`
 
 ## Shortened Script
 ```lua
