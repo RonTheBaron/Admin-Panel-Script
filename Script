@@ -584,7 +584,7 @@ local TitleText = Util.New("TextLabel", {
 	Position = UDim2.new(0,38,0,0),
 	Size = UDim2.new(1,-220,1,0),
 	Font = Enum.Font.GothamBold,
-	Text = "Developer Panel  //  MADE BY RONTHEBARON",
+	Text = "Developer Panel  //  Made By RONTHEBARON",
 	TextColor3 = Theme.Current.Text,
 	TextSize = 15,
 	TextXAlignment = Enum.TextXAlignment.Left,
@@ -1625,6 +1625,7 @@ local function createWaypointVisual(name, pos)
 		Transparency = 0.25,
 		Parent = Workspace,
 	})
+	Util.Corner -- (no-op guard, beam has no UI corner; kept for readability)
 
 	-- Floating ring at the base for visibility from above
 	local ring = Util.New("Part", {
@@ -2169,27 +2170,102 @@ end
 RegFeature("Field of View", "Movement", "Change camera field of view")
 
 ----------------------------------------------------------------------------
--- ESP SYSTEM (enhanced + FIXED)
+-- ESP SYSTEM — rebuilt on the Drawing API (screen-space rendering)
 ----------------------------------------------------------------------------
-local ESPHolders = {}  -- inst -> data
-local ESPBoxes   = {}  -- plr -> billboard w/ box
+-- This entire system now mirrors the logic from the reference scripts:
+--   • Box ESP    -> Drawing.new("Square"), corners projected via
+--                   Camera:WorldToViewportPoint like the Blissful box ESP.
+--   • Skeleton   -> Drawing.new("Line") per limb, R15/R6 aware, replaces
+--                   Box ESP entirely when active (per user choice).
+--   • Tracer ESP -> Drawing.new("Triangle") off-screen direction arrows,
+--                   only drawn for targets NOT currently on screen — exact
+--                   behavior of the arrow script (on-screen targets get no
+--                   tracer at all).
+--   • Name/Distance/Health -> Drawing.new("Text"), positioned above the box.
+--
+-- The Drawing API only exists in executor environments, not in a normal
+-- Roblox client. We guard for that so the rest of the panel still loads
+-- fine if run as a plain LocalScript in Studio/a live game; ESP toggles
+-- will simply notify the user and no-op in that case.
+----------------------------------------------------------------------------
+
+local DRAWING_AVAILABLE = typeof(Drawing) == "table" or typeof(Drawing) == "userdata"
+
+local ESPHolders = {} -- inst -> data (data.drawings holds all Drawing objects for this target)
+
+local function NewLine(color)
+	local l = Drawing.new("Line")
+	l.Visible = false
+	l.From = Vector2.new(0,0)
+	l.To = Vector2.new(0,0)
+	l.Color = color or Color3.fromRGB(255,255,255)
+	l.Thickness = 1
+	l.Transparency = 1
+	return l
+end
+
+local function NewSquare(color)
+	local s = Drawing.new("Square")
+	s.Visible = false
+	s.Color = color or Color3.fromRGB(255,255,255)
+	s.Thickness = 1
+	s.Filled = false
+	s.Transparency = 1
+	return s
+end
+
+local function NewText(color, size, center)
+	local t = Drawing.new("Text")
+	t.Visible = false
+	t.Color = color or Color3.fromRGB(255,255,255)
+	t.Size = size or 13
+	t.Center = center ~= false
+	t.Outline = true
+	t.Font = 2
+	t.Text = ""
+	return t
+end
+
+local function NewTriangle(color)
+	local tr = Drawing.new("Triangle")
+	tr.Visible = false
+	tr.Color = color or Color3.fromRGB(255,255,255)
+	tr.Filled = true
+	tr.Thickness = 1
+	tr.Transparency = 1
+	return tr
+end
+
+local function destroyDrawing(d)
+	if d then pcall(function() d:Remove() end) end
+end
+
+local function destroyESPData(data)
+	if not data then return end
+	destroyDrawing(data.boxSquare)
+	destroyDrawing(data.nameText)
+	destroyDrawing(data.distText)
+	destroyDrawing(data.hpText)
+	destroyDrawing(data.arrow)
+	if data.limbs then
+		for _, l in pairs(data.limbs) do destroyDrawing(l) end
+	end
+end
 
 local function clearESP(category)
+	if not DRAWING_AVAILABLE then return end
 	for inst, data in pairs(ESPHolders) do
 		if data.category == category then
-			if data.highlight  then pcall(function() data.highlight:Destroy() end) end
-			if data.billboard  then pcall(function() data.billboard:Destroy() end) end
-			if data.boxGui     then pcall(function() data.boxGui:Destroy() end) end
+			destroyESPData(data)
 			ESPHolders[inst] = nil
 		end
 	end
 end
 
 local function clearAllESP()
+	if not DRAWING_AVAILABLE then return end
 	for inst, data in pairs(ESPHolders) do
-		if data.highlight then pcall(function() data.highlight:Destroy() end) end
-		if data.billboard then pcall(function() data.billboard:Destroy() end) end
-		if data.boxGui    then pcall(function() data.boxGui:Destroy() end) end
+		destroyESPData(data)
 	end
 	ESPHolders = {}
 end
@@ -2208,149 +2284,302 @@ local function getHealthColor(hum)
 		50)
 end
 
--- FIXED: highlight (the "Box ESP") now only gets created when State.ESP.Boxes
--- is actually on, instead of unconditionally for any Player/NPC. Since
--- espToggle() now rebuilds everything via clearAllESP() on every change,
--- Box/Skeleton/Tracer/Team-Color toggles take effect immediately.
-local function addESP(inst, category, colorFn, labelFn, plr)
+-- R15 limb-pair definitions (bone, fromPartName, toPartName), mirrors the
+-- skeleton reference script exactly.
+local R15_LIMBS = {
+	{ "Head_UpperTorso",             "Head",            "UpperTorso" },
+	{ "UpperTorso_LowerTorso",       "UpperTorso",       "LowerTorso" },
+	{ "UpperTorso_LeftUpperArm",     "UpperTorso",       "LeftUpperArm" },
+	{ "LeftUpperArm_LeftLowerArm",   "LeftUpperArm",     "LeftLowerArm" },
+	{ "LeftLowerArm_LeftHand",       "LeftLowerArm",     "LeftHand" },
+	{ "UpperTorso_RightUpperArm",    "UpperTorso",       "RightUpperArm" },
+	{ "RightUpperArm_RightLowerArm", "RightUpperArm",    "RightLowerArm" },
+	{ "RightLowerArm_RightHand",     "RightLowerArm",    "RightHand" },
+	{ "LowerTorso_LeftUpperLeg",     "LowerTorso",       "LeftUpperLeg" },
+	{ "LeftUpperLeg_LeftLowerLeg",   "LeftUpperLeg",     "LeftLowerLeg" },
+	{ "LeftLowerLeg_LeftFoot",       "LeftLowerLeg",     "LeftFoot" },
+	{ "LowerTorso_RightUpperLeg",    "LowerTorso",       "RightUpperLeg" },
+	{ "RightUpperLeg_RightLowerLeg", "RightUpperLeg",    "RightLowerLeg" },
+	{ "RightLowerLeg_RightFoot",     "RightLowerLeg",    "RightFoot" },
+}
+-- R6 limb-pairs: these need CFrame offsets (handled specially below) rather
+-- than plain part positions, since R6 limbs are big single parts.
+local R6_LIMB_OFFSETS = {
+	Torso     = function(char) return char.Torso.Size.Y/2 - 0.2 end,
+	["Left Arm"]  = function(char) return char["Left Arm"].Size.Y/2 - 0.2 end,
+	["Right Arm"] = function(char) return char["Right Arm"].Size.Y/2 - 0.2 end,
+	["Left Leg"]  = function(char) return char["Left Leg"].Size.Y/2 - 0.2 end,
+	["Right Leg"] = function(char) return char["Right Leg"].Size.Y/2 - 0.2 end,
+}
+
+local function buildLimbDrawings(rigType, color)
+	local limbs = {}
+	if rigType == Enum.HumanoidRigType.R15 then
+		for _, def in ipairs(R15_LIMBS) do
+			limbs[def[1]] = NewLine(color)
+		end
+	else
+		local names = {
+			"Head_Spine","Spine",
+			"LeftArm","LeftArm_UpperTorso",
+			"RightArm","RightArm_UpperTorso",
+			"LeftLeg","LeftLeg_LowerTorso",
+			"RightLeg","RightLeg_LowerTorso",
+		}
+		for _, n in ipairs(names) do limbs[n] = NewLine(color) end
+	end
+	return limbs
+end
+
+-- Adds (or returns existing) ESP entry for a target instance.
+-- `inst` should be the HumanoidRootPart (or equivalent BasePart) of the target.
+-- `getCharacter` is a function returning the current Model to read limbs/health from.
+local function addESP(inst, category, colorFn, labelFn, plr, getCharacter)
+	if not DRAWING_AVAILABLE then return end
 	if ESPHolders[inst] then return end
 	local baseColor = colorFn and colorFn() or Theme.Current.Accent
 
-	-- Highlight (the actual "Box ESP" outline)
-	local highlight
-	if State.ESP.Boxes then
-		highlight = Util.New("Highlight", {
-			Adornee = inst,
-			FillColor = baseColor,
-			FillTransparency = State.ESP.Skeleton and 0.95 or 0.82,
-			OutlineColor = baseColor,
-			OutlineTransparency = 0,
-			DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
-			Parent = inst,
-		})
+	local rigType = nil
+	if getCharacter then
+		local char = getCharacter()
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		if hum then rigType = hum.RigType end
 	end
 
-	-- Billboard for name/distance/health
-	local billboard = Util.New("BillboardGui", {
-		Adornee = inst,
-		Size = UDim2.new(0,180,0,60),
-		StudsOffset = Vector3.new(0,3,0),
-		AlwaysOnTop = true,
-		Parent = inst,
-	})
-	local layout = Util.New("UIListLayout", {
-		Parent = billboard, Padding = UDim.new(0,1),
-		HorizontalAlignment = Enum.HorizontalAlignment.Center,
-	})
-
-	local nameLbl = Util.New("TextLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1,0,0,16),
-		Font = Enum.Font.GothamBold,
-		TextSize = 14,
-		TextStrokeTransparency = 0,
-		TextColor3 = baseColor,
-		Text = "",
-		Visible = State.ESP.Names,
-		Parent = billboard,
-	})
-	local distLbl = Util.New("TextLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1,0,0,13),
-		Font = Enum.Font.Gotham,
-		TextSize = 11,
-		TextStrokeTransparency = 0,
-		TextColor3 = Color3.new(1,1,1),
-		Text = "",
-		Visible = State.ESP.Distances,
-		Parent = billboard,
-	})
-	local hpLbl = Util.New("TextLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1,0,0,13),
-		Font = Enum.Font.Gotham,
-		TextSize = 11,
-		TextStrokeTransparency = 0,
-		TextColor3 = Color3.fromRGB(80,255,100),
-		Text = "",
-		Visible = State.ESP.Health,
-		Parent = billboard,
-	})
-
-	-- Tracer indicator
-	local tracerLbl = Util.New("TextLabel", {
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1,0,0,12),
-		Font = Enum.Font.Gotham,
-		TextSize = 10,
-		TextColor3 = baseColor,
-		Text = State.ESP.Tracers and "▼" or "",
-		Visible = State.ESP.Tracers,
-		Parent = billboard,
-	})
-
 	ESPHolders[inst] = {
-		highlight = highlight,
-		billboard = billboard,
-		category  = category,
-		nameLbl   = nameLbl,
-		distLbl   = distLbl,
-		hpLbl     = hpLbl,
-		tracerLbl = tracerLbl,
-		colorFn   = colorFn,
-		labelFn   = labelFn,
-		plr       = plr,
+		category     = category,
+		colorFn      = colorFn,
+		labelFn      = labelFn,
+		plr          = plr,
+		getCharacter = getCharacter,
+		rigType      = rigType,
+		boxSquare    = NewSquare(baseColor),
+		nameText     = NewText(baseColor, 14),
+		distText     = NewText(Color3.new(1,1,1), 12),
+		hpText       = NewText(Color3.fromRGB(80,255,100), 12),
+		arrow        = NewTriangle(baseColor),
+		limbs        = nil, -- built lazily once we know rig type
 	}
 end
 
+-- ---- Box ESP corner math (from the Blissful box ESP reference) ----
+local function getBoxCorners(rootPart, headSizeY)
+	local scale = (headSizeY or 2) / 2
+	local size = Vector3.new(2, 3, 0) * (scale * 2)
+	local cf = rootPart.CFrame
+	local TL = Camera:WorldToViewportPoint((cf * CFrame.new(size.X, size.Y, 0)).Position)
+	local TR = Camera:WorldToViewportPoint((cf * CFrame.new(-size.X, size.Y, 0)).Position)
+	local BL = Camera:WorldToViewportPoint((cf * CFrame.new(size.X, -size.Y, 0)).Position)
+	local BR = Camera:WorldToViewportPoint((cf * CFrame.new(-size.X, -size.Y, 0)).Position)
+	return TL, TR, BL, BR
+end
+
+-- ---- Off-screen tracer arrow math (from the arrow reference script) ----
+local function getRelative(pos)
+	local myChar = Character()
+	if not myChar or not myChar.PrimaryPart then return Vector2.new(0,0) end
+	local rootP = myChar.PrimaryPart.Position
+	local camP  = Camera.CFrame.Position
+	local relative = CFrame.new(Vector3.new(rootP.X, camP.Y, rootP.Z), camP):PointToObjectSpace(pos)
+	return Vector2.new(relative.X, relative.Z)
+end
+local function relativeToCenter(v)
+	return Camera.ViewportSize/2 - v
+end
+local function rotateVect(v, a)
+	a = math.rad(a)
+	local x = v.X * math.cos(a) - v.Y * math.sin(a)
+	local y = v.X * math.sin(a) + v.Y * math.cos(a)
+	return Vector2.new(x, y)
+end
+local ARROW_DIST   = 80
+local ARROW_HEIGHT = 16
+local ARROW_WIDTH  = 16
+
 local espHeartbeat
 local function startESPLoop()
+	if not DRAWING_AVAILABLE then return end
 	if espHeartbeat then return end
 	espHeartbeat = RunService.Heartbeat:Connect(function()
 		local myRoot = HRP()
 		for inst, data in pairs(ESPHolders) do
 			if not inst or not inst.Parent then
+				destroyESPData(data)
 				ESPHolders[inst] = nil
 			else
-				local pos = inst:IsA("BasePart") and inst.Position or Vector3.zero
-				local dist = myRoot and math.floor((myRoot.Position - pos).Magnitude) or 0
-				local plr  = data.plr
-				local hum  = plr and plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
+				local char = data.getCharacter and data.getCharacter() or inst:FindFirstAncestorOfClass("Model")
+				local hum  = char and char:FindFirstChildOfClass("Humanoid")
+				local alive = (not hum) or hum.Health > 0
 
-				-- Update colors
-				local baseColor = data.colorFn and data.colorFn() or Theme.Current.Accent
-				if State.ESP.TeamColor and plr then baseColor = getTeamColor(plr) end
-				if State.ESP.Health and hum then baseColor = getHealthColor(hum) end
-				if data.highlight then data.highlight.OutlineColor = baseColor end
+				if not alive then
+					if data.boxSquare then data.boxSquare.Visible = false end
+					if data.nameText then data.nameText.Visible = false end
+					if data.distText then data.distText.Visible = false end
+					if data.hpText then data.hpText.Visible = false end
+					if data.arrow then data.arrow.Visible = false end
+					if data.limbs then for _, l in pairs(data.limbs) do l.Visible = false end end
+				else
+					local pos = inst.Position
+					local screenPos, onScreen = Camera:WorldToViewportPoint(pos)
+					local dist = myRoot and math.floor((myRoot.Position - pos).Magnitude) or 0
 
-				-- Name
-				if data.nameLbl then
-					data.nameLbl.Visible = State.ESP.Names
-					data.nameLbl.Text    = data.labelFn and data.labelFn() or inst.Name
-					data.nameLbl.TextColor3 = baseColor
-				end
-				-- Distance
-				if data.distLbl then
-					data.distLbl.Visible = State.ESP.Distances
-					data.distLbl.Text    = dist.."m"
-				end
-				-- Health
-				if data.hpLbl then
-					data.hpLbl.Visible = State.ESP.Health
-					if hum then
-						local ratio = hum.Health / math.max(hum.MaxHealth,1)
-						data.hpLbl.Text = "HP: "..math.floor(ratio*100).."%"
-						data.hpLbl.TextColor3 = getHealthColor(hum)
+					-- Resolve current color (team/health override base color)
+					local baseColor = data.colorFn and data.colorFn() or Theme.Current.Accent
+					if State.ESP.TeamColor and data.plr then baseColor = getTeamColor(data.plr) end
+					if State.ESP.Health and hum then baseColor = getHealthColor(hum) end
+
+					----------------------------------------------------------------
+					-- BOX ESP (disabled automatically while Skeleton mode is on,
+					-- per the "replace entirely" behavior requested)
+					----------------------------------------------------------------
+					if State.ESP.Boxes and not State.ESP.Skeleton and onScreen then
+						local head = char and char:FindFirstChild("Head")
+						local headSizeY = head and head.Size.Y or 2
+						local TL, TR, BL, BR = getBoxCorners(inst, headSizeY)
+						local minX = math.min(TL.X, TR.X, BL.X, BR.X)
+						local maxX = math.max(TL.X, TR.X, BL.X, BR.X)
+						local minY = math.min(TL.Y, TR.Y, BL.Y, BR.Y)
+						local maxY = math.max(TL.Y, TR.Y, BL.Y, BR.Y)
+						data.boxSquare.Position = Vector2.new(minX, minY)
+						data.boxSquare.Size     = Vector2.new(maxX - minX, maxY - minY)
+						data.boxSquare.Color    = baseColor
+						data.boxSquare.Visible  = true
+					else
+						data.boxSquare.Visible = false
 					end
-				end
-				-- Tracer arrow
-				if data.tracerLbl then
-					data.tracerLbl.Visible = State.ESP.Tracers
-					data.tracerLbl.TextColor3 = baseColor
-				end
-				-- Skeleton (thin outline mode)
-				if data.highlight then
-					data.highlight.FillTransparency = State.ESP.Skeleton and 0.95 or 0.82
+
+					----------------------------------------------------------------
+					-- SKELETON ESP (replaces Box ESP entirely when on)
+					----------------------------------------------------------------
+					if State.ESP.Skeleton and onScreen and char then
+						if not data.limbs and data.rigType then
+							data.limbs = buildLimbDrawings(data.rigType, baseColor)
+						end
+						if data.limbs then
+							if data.rigType == Enum.HumanoidRigType.R15 then
+								for _, def in ipairs(R15_LIMBS) do
+									local line = data.limbs[def[1]]
+									local fromPart = char:FindFirstChild(def[2])
+									local toPart   = char:FindFirstChild(def[3])
+									if line and fromPart and toPart then
+										local A = Camera:WorldToViewportPoint(fromPart.Position)
+										local B = Camera:WorldToViewportPoint(toPart.Position)
+										line.From = Vector2.new(A.X, A.Y)
+										line.To   = Vector2.new(B.X, B.Y)
+										line.Color = baseColor
+										line.Visible = true
+									end
+								end
+							else
+								-- R6: derive joint points from CFrame offsets like the reference script
+								local torso = char:FindFirstChild("Torso")
+								local head  = char:FindFirstChild("Head")
+								local lArm  = char:FindFirstChild("Left Arm")
+								local rArm  = char:FindFirstChild("Right Arm")
+								local lLeg  = char:FindFirstChild("Left Leg")
+								local rLeg  = char:FindFirstChild("Right Leg")
+								if torso and head and lArm and rArm and lLeg and rLeg then
+									local tH = torso.Size.Y/2 - 0.2
+									local UT = Camera:WorldToViewportPoint((torso.CFrame * CFrame.new(0, tH, 0)).Position)
+									local LT = Camera:WorldToViewportPoint((torso.CFrame * CFrame.new(0, -tH, 0)).Position)
+									local H  = Camera:WorldToViewportPoint(head.Position)
+
+									local laH = lArm.Size.Y/2 - 0.2
+									local LUA = Camera:WorldToViewportPoint((lArm.CFrame * CFrame.new(0, laH, 0)).Position)
+									local LLA = Camera:WorldToViewportPoint((lArm.CFrame * CFrame.new(0, -laH, 0)).Position)
+
+									local raH = rArm.Size.Y/2 - 0.2
+									local RUA = Camera:WorldToViewportPoint((rArm.CFrame * CFrame.new(0, raH, 0)).Position)
+									local RLA = Camera:WorldToViewportPoint((rArm.CFrame * CFrame.new(0, -raH, 0)).Position)
+
+									local llH = lLeg.Size.Y/2 - 0.2
+									local LUL = Camera:WorldToViewportPoint((lLeg.CFrame * CFrame.new(0, llH, 0)).Position)
+									local LLL = Camera:WorldToViewportPoint((lLeg.CFrame * CFrame.new(0, -llH, 0)).Position)
+
+									local rlH = rLeg.Size.Y/2 - 0.2
+									local RUL = Camera:WorldToViewportPoint((rLeg.CFrame * CFrame.new(0, rlH, 0)).Position)
+									local RLL = Camera:WorldToViewportPoint((rLeg.CFrame * CFrame.new(0, -rlH, 0)).Position)
+
+									local L = data.limbs
+									L.Head_Spine.From = Vector2.new(H.X, H.Y);   L.Head_Spine.To = Vector2.new(UT.X, UT.Y)
+									L.Spine.From = Vector2.new(UT.X, UT.Y);      L.Spine.To = Vector2.new(LT.X, LT.Y)
+									L.LeftArm.From = Vector2.new(LUA.X, LUA.Y); L.LeftArm.To = Vector2.new(LLA.X, LLA.Y)
+									L.LeftArm_UpperTorso.From = Vector2.new(UT.X, UT.Y); L.LeftArm_UpperTorso.To = Vector2.new(LUA.X, LUA.Y)
+									L.RightArm.From = Vector2.new(RUA.X, RUA.Y); L.RightArm.To = Vector2.new(RLA.X, RLA.Y)
+									L.RightArm_UpperTorso.From = Vector2.new(UT.X, UT.Y); L.RightArm_UpperTorso.To = Vector2.new(RUA.X, RUA.Y)
+									L.LeftLeg.From = Vector2.new(LUL.X, LUL.Y); L.LeftLeg.To = Vector2.new(LLL.X, LLL.Y)
+									L.LeftLeg_LowerTorso.From = Vector2.new(LT.X, LT.Y); L.LeftLeg_LowerTorso.To = Vector2.new(LUL.X, LUL.Y)
+									L.RightLeg.From = Vector2.new(RUL.X, RUL.Y); L.RightLeg.To = Vector2.new(RLL.X, RLL.Y)
+									L.RightLeg_LowerTorso.From = Vector2.new(LT.X, LT.Y); L.RightLeg_LowerTorso.To = Vector2.new(RUL.X, RUL.Y)
+
+									for _, l in pairs(L) do l.Color = baseColor; l.Visible = true end
+								end
+							end
+						end
+					else
+						if data.limbs then for _, l in pairs(data.limbs) do l.Visible = false end end
+					end
+
+					----------------------------------------------------------------
+					-- NAME / DISTANCE / HEALTH TEXT (drawn above the on-screen target)
+					----------------------------------------------------------------
+					if onScreen then
+						local textY = screenPos.Y - 40
+						if State.ESP.Names then
+							data.nameText.Text = data.labelFn and data.labelFn() or inst.Name
+							data.nameText.Color = baseColor
+							data.nameText.Position = Vector2.new(screenPos.X, textY)
+							data.nameText.Visible = true
+							textY += 16
+						else
+							data.nameText.Visible = false
+						end
+						if State.ESP.Distances then
+							data.distText.Text = dist.."m"
+							data.distText.Position = Vector2.new(screenPos.X, textY)
+							data.distText.Visible = true
+							textY += 14
+						else
+							data.distText.Visible = false
+						end
+						if State.ESP.Health and hum then
+							local ratio = hum.Health / math.max(hum.MaxHealth,1)
+							data.hpText.Text = "HP: "..math.floor(ratio*100).."%"
+							data.hpText.Color = getHealthColor(hum)
+							data.hpText.Position = Vector2.new(screenPos.X, textY)
+							data.hpText.Visible = true
+						else
+							data.hpText.Visible = false
+						end
+					else
+						data.nameText.Visible = false
+						data.distText.Visible = false
+						data.hpText.Visible = false
+					end
+
+					----------------------------------------------------------------
+					-- TRACER ESP — off-screen direction arrow ONLY (matches the
+					-- arrow reference script: on-screen targets get no arrow).
+					----------------------------------------------------------------
+					if State.ESP.Tracers and not onScreen then
+						local rel = getRelative(pos)
+						if rel.Magnitude > 0 then
+							local direction = rel.Unit
+							local base = direction * ARROW_DIST
+							local sideLength = ARROW_WIDTH / 2
+							local baseL = base + rotateVect(direction, 90) * sideLength
+							local baseR = base + rotateVect(direction, -90) * sideLength
+							local tip = direction * (ARROW_DIST + ARROW_HEIGHT)
+
+							data.arrow.PointA = relativeToCenter(baseL)
+							data.arrow.PointB = relativeToCenter(baseR)
+							data.arrow.PointC = relativeToCenter(tip)
+							data.arrow.Color = baseColor
+							data.arrow.Visible = true
+						end
+					else
+						data.arrow.Visible = false
+					end
 				end
 			end
 		end
@@ -2358,6 +2587,7 @@ local function startESPLoop()
 end
 
 local function rescanWorld()
+	if not DRAWING_AVAILABLE then return end
 	if State.ESP.Players then
 		for _, plr in ipairs(Players:GetPlayers()) do
 			if plr ~= LocalPlayer and plr.Character then
@@ -2368,7 +2598,7 @@ local function rescanWorld()
 						return Theme.Current.Accent
 					end, function()
 						return plr.DisplayName
-					end, plr)
+					end, plr, function() return plr.Character end)
 				end
 			end
 		end
@@ -2381,7 +2611,7 @@ local function rescanWorld()
 				local root  = model and model:FindFirstChild("HumanoidRootPart")
 				if root and not Players:GetPlayerFromCharacter(model) and not ESPHolders[root] then
 					addESP(root, "NPCs", function() return Theme.Current.Bad end,
-					function() return model.Name end)
+					function() return model.Name end, nil, function() return model end)
 				end
 			end
 		end
@@ -2423,6 +2653,10 @@ local function rescanWorld()
 end
 
 local function refreshESP()
+	if not DRAWING_AVAILABLE then
+		Notify.Push("ESP Unavailable", "The Drawing API isn't available in this environment (executor required)", "Warn", 3)
+		return
+	end
 	rescanWorld()
 	startESPLoop()
 end
@@ -2435,16 +2669,16 @@ task.spawn(function()
 	end
 end)
 
-RegFeature("ESP Players",    "Visuals", "See player positions through walls")
-RegFeature("ESP NPCs",       "Visuals", "See NPC positions through walls")
+RegFeature("ESP Players",    "Visuals", "See player positions through walls (Drawing-based)")
+RegFeature("ESP NPCs",       "Visuals", "See NPC positions through walls (Drawing-based)")
 RegFeature("ESP Items",      "Visuals", "Highlight items tagged ESP_Item (requires CollectionService tag in Studio)")
 RegFeature("ESP Objectives", "Visuals", "Highlight objectives tagged ESP_Objective")
-RegFeature("Box ESP",        "Visuals", "Draw highlight boxes around targets")
-RegFeature("Tracer ESP",     "Visuals", "Draw arrows pointing to targets")
+RegFeature("Box ESP",        "Visuals", "Draw a screen-space box around targets (Drawing.Square)")
+RegFeature("Tracer ESP",     "Visuals", "Off-screen direction arrows pointing toward targets (Drawing.Triangle)")
 RegFeature("Name ESP",       "Visuals", "Show name labels above targets")
 RegFeature("Distance ESP",   "Visuals", "Show distance to each target")
 RegFeature("Health ESP",     "Visuals", "Show HP bars / color coded health")
-RegFeature("Skeleton ESP",   "Visuals", "Thin highlight outline mode")
+RegFeature("Skeleton ESP",   "Visuals", "Full limb skeleton (R15/R6 aware) — replaces Box ESP when active")
 RegFeature("Team-Color ESP", "Visuals", "Color targets by their team")
 RegFeature("Vehicle ESP",    "Visuals", "Highlight vehicles in the world")
 
