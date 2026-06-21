@@ -1,6 +1,6 @@
 --[[
 	================================================================================
-	 DEVELOPER ADMIN PANEL  —  MADE BY RonTheBaron
+	 DEVELOPER ADMIN PANEL  —  MADE BY RONTHEBARON
 	================================================================================
 	Place in StarterPlayerScripts or run via executor while testing.
 	Builds its own ScreenGui at runtime. 100% client-side.
@@ -30,6 +30,28 @@
 	NOTE: Aim-lock and trigger-bot features are intentionally omitted as they would
 	cause harm to other players in live game sessions.
 	================================================================================
+
+	--------------------------------------------------------------------------
+	CHANGELOG (this revision)
+	--------------------------------------------------------------------------
+	FIX: Double Jump — JumpRequest previously only called hum:ChangeState(Jumping)
+	     for the second jump, which Roblox silently ignores when the humanoid is
+	     already in the Jumping state. Now applies a direct vertical velocity
+	     impulse so the second jump always registers.
+	FIX: ESP modifier toggles (Box/Skeleton/Tracers/Team Color) — these toggles
+	     previously only changed a flag and called refreshESP(), which does NOT
+	     rebuild already-existing ESP entries. Box highlights were also created
+	     unconditionally for any Player/NPC regardless of the Boxes toggle.
+	     espToggle() now calls clearAllESP() before refreshESP() so every toggle
+	     forces a full, correct rebuild. addESP() now only creates the highlight
+	     object when State.ESP.Boxes is true.
+	NOTE: Item ESP relies on CollectionService tag "ESP_Item" — this is a content
+	     requirement, not a code bug. Nothing will show until you tag objects in
+	     Studio (or call inst:AddTag("ESP_Item") from another script).
+	ADDED: Saved Locations now show a real list with per-location Go / Waypoint
+	     toggle / Delete buttons, and place a visible neon beam + floating label
+	     in the world that can be toggled on/off per location.
+	--------------------------------------------------------------------------
 ]]
 
 ----------------------------------------------------------------------------
@@ -562,7 +584,7 @@ local TitleText = Util.New("TextLabel", {
 	Position = UDim2.new(0,38,0,0),
 	Size = UDim2.new(1,-220,1,0),
 	Font = Enum.Font.GothamBold,
-	Text = "Developer Panel  //  Extended",
+	Text = "Developer Panel  //  MADE BY RONTHEBARON",
 	TextColor3 = Theme.Current.Text,
 	TextSize = 15,
 	TextXAlignment = Enum.TextXAlignment.Left,
@@ -1345,15 +1367,38 @@ RunService.Heartbeat:Connect(function()
 	end
 end)
 
+-- FIXED: Double jump previously only called hum:ChangeState(Jumping) for the
+-- second jump, but Roblox silently ignores that call when the humanoid is
+-- already in the Jumping state — so the second press did nothing. Now we
+-- apply a direct vertical velocity impulse, which always registers.
 UserInputService.JumpRequest:Connect(function()
 	local hum = Humanoid()
 	if not hum then return end
+	-- Infinite jump takes priority: force a jump on every press regardless of state
 	if State.InfiniteJump then
+		local root = HRP()
+		if root then
+			local vel = root.AssemblyLinearVelocity
+			root.AssemblyLinearVelocity = Vector3.new(vel.X, hum.JumpPower > 0 and hum.JumpPower or 50, vel.Z)
+		end
 		hum:ChangeState(Enum.HumanoidStateType.Jumping)
-	elseif State.DoubleJump and not State._djUsed and
-		hum:GetState() ~= Enum.HumanoidStateType.Landed then
-		State._djUsed = true
-		hum:ChangeState(Enum.HumanoidStateType.Jumping)
+		return
+	end
+	-- Double jump: only fires once per airborne period, resets on landing
+	if State.DoubleJump and not State._djUsed then
+		local st = hum:GetState()
+		if st == Enum.HumanoidStateType.Freefall
+			or st == Enum.HumanoidStateType.Jumping then
+			State._djUsed = true
+			local root = HRP()
+			if root then
+				-- Direct velocity impulse instead of relying solely on ChangeState,
+				-- which the engine ignores while already Jumping.
+				local vel = root.AssemblyLinearVelocity
+				root.AssemblyLinearVelocity = Vector3.new(vel.X, hum.JumpPower > 0 and hum.JumpPower or 50, vel.Z)
+			end
+			hum:ChangeState(Enum.HumanoidStateType.Jumping)
+		end
 	end
 end)
 
@@ -1549,14 +1594,100 @@ end
 RegFeature("Respawn", "Movement", "Force-respawn your character")
 
 ----------------------------------------------------------------------------
--- FEATURE: Save/Restore Teleport Locations
+-- FEATURE: Save/Restore Teleport Locations  (REWRITTEN)
 ----------------------------------------------------------------------------
+-- Each saved location is stored as { x, y, z, waypointOn } so we know
+-- whether to show the in-world waypoint marker for it after a rejoin.
+
+local _waypointParts = {} -- name -> { part = Part, billboard = BillboardGui }
+
+local function destroyWaypointVisual(name)
+	if _waypointParts[name] then
+		pcall(function() _waypointParts[name].part:Destroy() end)
+		_waypointParts[name] = nil
+	end
+end
+
+local function createWaypointVisual(name, pos)
+	destroyWaypointVisual(name)
+
+	-- Vertical glowing beam marking the location
+	local beam = Util.New("Part", {
+		Name = "Waypoint_" .. name,
+		Anchored = true,
+		CanCollide = false,
+		CanQuery = false,
+		CanTouch = false,
+		Material = Enum.Material.Neon,
+		Color = Theme.Current.Accent,
+		Size = Vector3.new(0.5, 14, 0.5),
+		CFrame = CFrame.new(pos + Vector3.new(0, 7, 0)),
+		Transparency = 0.25,
+		Parent = Workspace,
+	})
+
+	-- Floating ring at the base for visibility from above
+	local ring = Util.New("Part", {
+		Name = "WaypointRing_" .. name,
+		Anchored = true,
+		CanCollide = false,
+		CanQuery = false,
+		CanTouch = false,
+		Shape = Enum.PartType.Cylinder,
+		Material = Enum.Material.Neon,
+		Color = Theme.Current.Accent,
+		Size = Vector3.new(0.3, 4, 4),
+		CFrame = CFrame.new(pos + Vector3.new(0, 0.2, 0)) * CFrame.Angles(0, 0, math.rad(90)),
+		Transparency = 0.3,
+		Parent = beam,
+	})
+
+	local billboard = Util.New("BillboardGui", {
+		Adornee = beam,
+		Size = UDim2.new(0, 170, 0, 40),
+		StudsOffset = Vector3.new(0, 9, 0),
+		AlwaysOnTop = true,
+		Parent = beam,
+	})
+	Util.New("TextLabel", {
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1,0,1,0),
+		Font = Enum.Font.GothamBold,
+		Text = "📍 " .. name,
+		TextColor3 = Theme.Current.Accent,
+		TextStrokeTransparency = 0,
+		TextSize = 16,
+		Parent = billboard,
+	})
+
+	-- Gentle bob animation so it reads clearly in busy scenes
+	task.spawn(function()
+		local t = 0
+		while beam and beam.Parent do
+			t = t + task.wait(0.03)
+			local offset = math.sin(t * 2) * 0.4
+			beam.CFrame = CFrame.new(pos + Vector3.new(0, 7 + offset, 0))
+		end
+	end)
+
+	_waypointParts[name] = { part = beam, billboard = billboard }
+end
+
+local function toggleWaypointVisual(name, pos, on)
+	if on then
+		createWaypointVisual(name, pos)
+	else
+		destroyWaypointVisual(name)
+	end
+end
+
 local function saveTeleportLocation(name)
 	local root = HRP()
 	if not root then Notify.Push("Save Location", "No character!", "Error"); return end
 	local pos = root.Position
-	Settings.SavedLocations[name] = { pos.X, pos.Y, pos.Z }
+	Settings.SavedLocations[name] = { pos.X, pos.Y, pos.Z, true } -- waypoint visible by default
 	saveSettings()
+	createWaypointVisual(name, pos)
 	Notify.Push("Location Saved", name .. " → "..math.floor(pos.X)..","..math.floor(pos.Y)..","..math.floor(pos.Z), "Success", 2)
 end
 
@@ -1566,8 +1697,14 @@ local function teleportToSaved(name)
 	local root = HRP()
 	if not root then return end
 	State._lastTeleportCF = root.CFrame
-	root.CFrame = CFrame.new(loc[1], loc[2], loc[3])
+	root.CFrame = CFrame.new(loc[1], loc[2] + 3, loc[3]) -- +3 studs so you land above ground, not inside it
 	Notify.Push("Teleported", "Moved to " .. name, "Success", 2)
+end
+
+local function deleteSavedLocation(name)
+	Settings.SavedLocations[name] = nil
+	saveSettings()
+	destroyWaypointVisual(name)
 end
 
 local function undoTeleport()
@@ -1580,8 +1717,16 @@ local function undoTeleport()
 	State._lastTeleportCF = nil
 	Notify.Push("Undo Teleport", "Returned to previous location", "Success", 2)
 end
-RegFeature("Save Teleport Locations", "Movement", "Save & restore named positions")
+RegFeature("Save Teleport Locations", "Movement", "Save & restore named positions, each with a toggleable in-world waypoint")
 RegFeature("Undo Last Teleport", "Movement", "Return to where you last teleported from")
+
+-- Recreate waypoint visuals for any saved locations that had them enabled,
+-- in case the script reloads while you're still in the game.
+for locName, loc in pairs(Settings.SavedLocations) do
+	if loc[4] ~= false then
+		createWaypointVisual(locName, Vector3.new(loc[1], loc[2], loc[3]))
+	end
+end
 
 ----------------------------------------------------------------------------
 -- FEATURE: Freecam
@@ -2024,7 +2169,7 @@ end
 RegFeature("Field of View", "Movement", "Change camera field of view")
 
 ----------------------------------------------------------------------------
--- ESP SYSTEM (enhanced)
+-- ESP SYSTEM (enhanced + FIXED)
 ----------------------------------------------------------------------------
 local ESPHolders = {}  -- inst -> data
 local ESPBoxes   = {}  -- plr -> billboard w/ box
@@ -2063,17 +2208,21 @@ local function getHealthColor(hum)
 		50)
 end
 
+-- FIXED: highlight (the "Box ESP") now only gets created when State.ESP.Boxes
+-- is actually on, instead of unconditionally for any Player/NPC. Since
+-- espToggle() now rebuilds everything via clearAllESP() on every change,
+-- Box/Skeleton/Tracer/Team-Color toggles take effect immediately.
 local function addESP(inst, category, colorFn, labelFn, plr)
 	if ESPHolders[inst] then return end
 	local baseColor = colorFn and colorFn() or Theme.Current.Accent
 
-	-- Highlight (box-ish glow)
+	-- Highlight (the actual "Box ESP" outline)
 	local highlight
-	if State.ESP.Boxes or category == "Players" or category == "NPCs" then
+	if State.ESP.Boxes then
 		highlight = Util.New("Highlight", {
 			Adornee = inst,
 			FillColor = baseColor,
-			FillTransparency = 0.82,
+			FillTransparency = State.ESP.Skeleton and 0.95 or 0.82,
 			OutlineColor = baseColor,
 			OutlineTransparency = 0,
 			DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
@@ -2128,8 +2277,7 @@ local function addESP(inst, category, colorFn, labelFn, plr)
 		Parent = billboard,
 	})
 
-	-- Tracer line (drawn via a screen-space beam in a SurfaceGui-style workaround)
-	-- Simplified: a line from screen bottom to target via Billboard
+	-- Tracer indicator
 	local tracerLbl = Util.New("TextLabel", {
 		BackgroundTransparency = 1,
 		Size = UDim2.new(1,0,0,12),
@@ -2200,7 +2348,7 @@ local function startESPLoop()
 					data.tracerLbl.Visible = State.ESP.Tracers
 					data.tracerLbl.TextColor3 = baseColor
 				end
-				-- Skeleton (thin lines approximated via outline highlight only)
+				-- Skeleton (thin outline mode)
 				if data.highlight then
 					data.highlight.FillTransparency = State.ESP.Skeleton and 0.95 or 0.82
 				end
@@ -2289,7 +2437,7 @@ end)
 
 RegFeature("ESP Players",    "Visuals", "See player positions through walls")
 RegFeature("ESP NPCs",       "Visuals", "See NPC positions through walls")
-RegFeature("ESP Items",      "Visuals", "Highlight items tagged ESP_Item")
+RegFeature("ESP Items",      "Visuals", "Highlight items tagged ESP_Item (requires CollectionService tag in Studio)")
 RegFeature("ESP Objectives", "Visuals", "Highlight objectives tagged ESP_Objective")
 RegFeature("Box ESP",        "Visuals", "Draw highlight boxes around targets")
 RegFeature("Tracer ESP",     "Visuals", "Draw arrows pointing to targets")
@@ -2527,6 +2675,30 @@ local function teleportTo(targetPlayer)
 end
 
 ----------------------------------------------------------------------------
+-- SPECTATE (defined before Players page uses it)
+----------------------------------------------------------------------------
+local Spectate = {
+	Start = function(targetPlayer)
+		local char = targetPlayer.Character
+		local hum  = char and char:FindFirstChildOfClass("Humanoid")
+		if not hum then
+			Notify.Push("Spectate Failed", targetPlayer.Name.." has no character", "Error"); return
+		end
+		State.Spectating = targetPlayer
+		Camera.CameraType    = Enum.CameraType.Custom
+		Camera.CameraSubject = hum
+		Notify.Push("Spectating", targetPlayer.Name.." — click Unspectate to stop", "Info", 3)
+	end,
+	Stop = function()
+		State.Spectating = nil
+		local hum = Humanoid()
+		Camera.CameraSubject = hum or Camera.CameraSubject
+		Camera.CameraType    = Enum.CameraType.Custom
+		Notify.Push("Spectate", "Stopped spectating", "Info", 2)
+	end,
+}
+
+----------------------------------------------------------------------------
 -- DEVELOPER: RemoteEvent Logger
 ----------------------------------------------------------------------------
 local _remoteLog = {}
@@ -2746,9 +2918,13 @@ do
 	Components.Slider(s2, "Sprint Speed", 20, 300, Settings.SprintSpeed, function(v)
 		Settings.SprintSpeed = v; saveSettings()
 	end, 8)
-	Components.Slider(s2, "JumpPower", 50, 400, Settings.JumpPower, function(v)
+	Components.Slider(s2, "JumpPower", 0, 400, Settings.JumpPower, function(v)
 		Settings.JumpPower = v
-		local hum = Humanoid(); if hum then hum.JumpPower = v end
+		local hum = Humanoid()
+		if hum then
+			hum.UseJumpPower = true
+			hum.JumpPower = v
+		end
 		saveSettings()
 	end, 9)
 	Components.Button(s2, "Dash Forward", function() Dash.Do() end, 10, "Instant forward dash")
@@ -2769,7 +2945,7 @@ do
 	end, 3, "Anchor your character in place")
 	Components.Button(s3, "Respawn", doRespawn, 4, "Force-respawn your character")
 
-	-- Teleport Locations
+	-- Teleport Locations (REWRITTEN: now shows a real list with Go / Waypoint / Delete buttons)
 	local s4 = Components.Section(page, "📌 Saved Locations", 4)
 	local locNameBox = Util.New("TextBox", {
 		Size = UDim2.new(1,0,0,28),
@@ -2787,40 +2963,100 @@ do
 	Util.Corner(6, locNameBox)
 	Util.Pad(locNameBox, 8)
 	themed(locNameBox, "BackgroundColor3", "Elevated")
-	Components.Button(s4, "Save Current Position", function()
-		local n = locNameBox.Text ~= "" and locNameBox.Text or ("Loc"..tostring(#Settings.SavedLocations+1))
-		saveTeleportLocation(n)
-	end, 2)
-	Components.Button(s4, "Undo Last Teleport", undoTeleport, 3)
-	-- Existing saved locations list
+
 	local locListHolder = Util.New("Frame", {
 		BackgroundTransparency=1, Size=UDim2.new(1,0,0,0),
 		AutomaticSize=Enum.AutomaticSize.Y, LayoutOrder=4, Parent=s4,
 	})
 	Util.New("UIListLayout", { Parent=locListHolder, Padding=UDim.new(0,4), SortOrder=Enum.SortOrder.LayoutOrder })
+
 	local function rebuildLocList()
 		for _, c in ipairs(locListHolder:GetChildren()) do
 			if c:IsA("GuiObject") then c:Destroy() end
 		end
 		local i = 0
-		for name, _ in pairs(Settings.SavedLocations) do
+		for name, loc in pairs(Settings.SavedLocations) do
 			i += 1
 			local row = Util.New("Frame", {
-				BackgroundTransparency=1, Size=UDim2.new(1,0,0,28), LayoutOrder=i, Parent=locListHolder,
+				BackgroundColor3 = Theme.Current.Elevated,
+				Size = UDim2.new(1,0,0,32),
+				LayoutOrder = i,
+				Parent = locListHolder,
 			})
+			Util.Corner(6, row)
+			themed(row, "BackgroundColor3", "Elevated")
+			Util.Pad(row, 8, 4, 0, 0)
+
 			Util.New("TextLabel", {
-				BackgroundTransparency=1, Size=UDim2.new(1,-100,1,0),
-				Font=Enum.Font.Gotham, Text=name, TextSize=12,
-				TextColor3=Theme.Current.SubText, TextXAlignment=Enum.TextXAlignment.Left, Parent=row,
+				BackgroundTransparency = 1,
+				Size = UDim2.new(1,-152,1,0),
+				Font = Enum.Font.Gotham,
+				Text = name,
+				TextSize = 12,
+				TextColor3 = Theme.Current.Text,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				Parent = row,
 			})
+
+			-- Go (teleport) button
 			local tpBtn = Components.Button(row, "Go", function() teleportToSaved(name) end)
-			tpBtn.Size = UDim2.new(0,40,0,24); tpBtn.Position = UDim2.new(1,-90,0.5,-12)
-			local delBtn = Components.DangerButton(row, "✕", function()
-				Settings.SavedLocations[name] = nil; saveSettings(); rebuildLocList()
+			tpBtn.Size = UDim2.new(0,40,0,24)
+			tpBtn.Position = UDim2.new(1,-148,0.5,-12)
+
+			-- Waypoint on/off toggle button
+			local wpOn = loc[4] ~= false
+			local wpBtn = Util.New("TextButton", {
+				Size = UDim2.new(0,68,0,24),
+				Position = UDim2.new(1,-104,0.5,-12),
+				BackgroundColor3 = wpOn and Theme.Current.Accent or Theme.Current.Panel,
+				Text = wpOn and "📍 On" or "📍 Off",
+				Font = Enum.Font.GothamBold,
+				TextSize = 11,
+				TextColor3 = Color3.new(1,1,1),
+				AutoButtonColor = false,
+				Parent = row,
+			})
+			Util.Corner(6, wpBtn)
+			wpBtn.MouseButton1Click:Connect(function()
+				local l = Settings.SavedLocations[name]
+				if not l then return end
+				l[4] = not (l[4] ~= false)
+				saveSettings()
+				toggleWaypointVisual(name, Vector3.new(l[1], l[2], l[3]), l[4])
+				wpBtn.BackgroundColor3 = l[4] and Theme.Current.Accent or Theme.Current.Panel
+				wpBtn.Text = l[4] and "📍 On" or "📍 Off"
 			end)
-			delBtn.Size = UDim2.new(0,30,0,24); delBtn.Position = UDim2.new(1,-44,0.5,-12)
+
+			-- Delete button
+			local delBtn = Components.DangerButton(row, "✕", function()
+				deleteSavedLocation(name)
+				rebuildLocList()
+			end)
+			delBtn.Size = UDim2.new(0,30,0,24)
+			delBtn.Position = UDim2.new(1,-32,0.5,-12)
+		end
+		if i == 0 then
+			Util.New("TextLabel", {
+				BackgroundTransparency = 1,
+				Size = UDim2.new(1,0,0,20),
+				Font = Enum.Font.Gotham,
+				Text = "No saved locations yet.",
+				TextSize = 11,
+				TextColor3 = Theme.Current.SubText,
+				Parent = locListHolder,
+			})
 		end
 	end
+
+	Components.Button(s4, "Save Current Position", function()
+		local n = locNameBox.Text ~= "" and locNameBox.Text or ("Loc"..tostring((function() local c=0 for _ in pairs(Settings.SavedLocations) do c+=1 end return c+1 end)()))
+		saveTeleportLocation(n)
+		locNameBox.Text = ""
+		rebuildLocList()
+	end, 2)
+	Components.Button(s4, "Undo Last Teleport", undoTeleport, 3)
+
 	rebuildLocList()
 
 	-- Camera
@@ -2870,11 +3106,14 @@ end
 do
 	local page = Pages.Visuals.page
 
-	-- ESP Main
+	-- ESP Main (FIXED: every toggle now forces clearAllESP() + refreshESP()
+	-- so Box/Skeleton/Tracer/Team-Color/Item changes apply immediately)
 	local s1 = Components.Section(page, "👁 ESP Controls", 1)
 	local function espToggle(label, key, order)
 		Components.Toggle(s1, label, false, function(v)
-			State.ESP[key] = v; refreshESP()
+			State.ESP[key] = v
+			clearAllESP()   -- force a full rebuild so modifier toggles apply correctly
+			refreshESP()
 		end, order)
 	end
 	espToggle("Players",         "Players",    1)
@@ -2889,6 +3128,8 @@ do
 	espToggle("Health Display",  "Health",     10)
 	espToggle("Skeleton Mode",   "Skeleton",   11)
 	espToggle("Team Colors",     "TeamColor",  12)
+
+	Components.Label(s1, "ℹ Item/Objective ESP requires tagging objects with\nCollectionService tags 'ESP_Item' / 'ESP_Objective' in Studio.", 13, true)
 
 	-- Character Visuals
 	local s2 = Components.Section(page, "✨ Character", 2)
@@ -3082,23 +3323,23 @@ do
 			Parent=row,
 		})
 		local tpBtn = Components.Button(row, "TP", function() teleportTo(plr) end)
-		tpBtn.Size=UDim2.new(0,40,0,26); tpBtn.Position=UDim2.new(1,-90,0.5,-13)
+		tpBtn.Size=UDim2.new(0,36,0,26); tpBtn.Position=UDim2.new(1,-130,0.5,-13)
 		local specBtn = Components.Button(row, "Spec", function()
 			if State.Spectating == plr then
 				Spectate.Stop()
+				specBtn.Text = "Spec"
 			else
-				-- Spectate inline
-				local char = plr.Character
-				local hum  = char and char:FindFirstChildOfClass("Humanoid")
-				if hum then
-					State.Spectating = plr
-					Camera.CameraType = Enum.CameraType.Custom
-					Camera.CameraSubject = hum
-					Notify.Push("Spectating", plr.Name, "Info", 2)
-				end
+				Spectate.Start(plr)
+				specBtn.Text = "Unspec"
 			end
 		end)
-		specBtn.Size=UDim2.new(0,40,0,26); specBtn.Position=UDim2.new(1,-44,0.5,-13)
+		specBtn.Size=UDim2.new(0,52,0,26); specBtn.Position=UDim2.new(1,-86,0.5,-13)
+		-- Stop-spectate shortcut button (always visible so user can always escape)
+		local stopSpecBtn = Components.Button(row, "📷✕", function()
+			if State.Spectating then Spectate.Stop() specBtn.Text = "Spec" end
+		end)
+		stopSpecBtn.Size=UDim2.new(0,28,0,26); stopSpecBtn.Position=UDim2.new(1,-28,0.5,-13)
+		stopSpecBtn.BackgroundColor3 = Theme.Current.Bad
 		return row
 	end
 
@@ -3137,15 +3378,7 @@ do
 	end, 2)
 end
 
--- Spectate Stop helper
-local Spectate = {
-	Stop = function()
-		State.Spectating = nil
-		local hum = Humanoid()
-		Camera.CameraSubject = hum or Camera.CameraSubject
-		Camera.CameraType    = Enum.CameraType.Custom
-	end,
-}
+-- (Spectate.Stop is defined earlier, before Players page)
 
 -- =========================================================
 -- DEVELOPER PAGE
