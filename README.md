@@ -7,7 +7,7 @@ MADE BY RONTHEBARON
 A lot of the features are very buggy and don't work as intended, so please be careful with the usage of the script as it might get you **banned**.
 
 ## Script version
-`Version 1.0`
+`Version 1.01`
 
 ## Shortened Script
 ```lua
@@ -40,6 +40,10 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/RonTheBaron/Admin-Pan
 - Swim in air (buggy)
 
 - Freeze & Unfreeze character
+  
+- Waypoints Saving
+
+- Teleport To Waypoint
 
 - Respawn button (does not work yet)
 
@@ -155,6 +159,8 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/RonTheBaron/Admin-Pan
 - Rainbow particles
 
 **Players**
+
+- Player Spectate
 
 - Player Search Bar
 
