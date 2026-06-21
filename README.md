@@ -15,6 +15,9 @@ loadstring(game:HttpGet("https://raw.githubusercontent.com/RonTheBaron/Admin-Pan
 ```
 
 ## Features
+
+- Searchable Features
+
 **Movement**
 
 - Fly (with speed slider)
